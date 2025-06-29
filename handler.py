@@ -1,93 +1,109 @@
 import runpod
+from runpod import RunpodLogger  # Use RunPod's logger[4]
 import subprocess
 import os
 import tempfile
 import base64
 import requests
-import logging
 import time
 
-# Enhanced logging configuration[9]
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Use RunPod's logger instead of standard logging[4]
+log = RunpodLogger()
 
 def send_telegram_message(bot_token, chat_id, text):
-    """Send simple text message to Telegram"""
+    """Send message to Telegram with error handling"""
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         data = {'chat_id': chat_id, 'text': text}
-        requests.post(url, data=data, timeout=10)
+        response = requests.post(url, data=data, timeout=10)
+        log.info(f"Telegram message sent successfully to {chat_id}")
+        return True
     except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
+        log.error(f"Failed to send Telegram message: {e}")
+        return False
 
 def handler(job):
-    """Enhanced handler with better error handling"""
+    """Handler with proper RunPod logging[4]"""
     
+    # Log immediately to confirm handler is running
+    log.info("=== HANDLER STARTED ===")
+    log.info(f"Received job: {job}")
+    
+    # Get bot token from environment
     bot_token = os.environ.get('RUNPOD_SECRET_TELEGRAM_BOT_TOKEN')
     if not bot_token:
-        logger.error("Bot token not found in secrets")
+        log.error("CRITICAL: Bot token not found in environment")
         return {"error": "Bot token not configured"}
     
+    log.info("Bot token found successfully")
+    
+    # Extract job input
     job_input = job.get('input', {})
     chat_id = job_input.get('chat_id')
     
     if not chat_id:
-        logger.error("No chat_id provided in job input")
+        log.error("CRITICAL: No chat_id provided")
         return {"error": "chat_id is required"}
     
-    logger.info(f"Processing job for chat_id: {chat_id}")
+    log.info(f"Processing for chat_id: {chat_id}")
     
     try:
-        # Send processing notification
-        send_telegram_message(bot_token, chat_id, "🔄 Starting face swap processing...")
+        # Send immediate confirmation
+        send_telegram_message(bot_token, chat_id, "🔄 Job received and processing started!")
         
-        # Create temp directory
-        temp_dir = tempfile.mkdtemp()
-        logger.info(f"Created temp directory: {temp_dir}")
-        
-        # Process files
-        is_video = job_input.get('is_video', False)
-        
-        # Handle source image
-        source_path = os.path.join(temp_dir, 'source.jpg')
-        try:
-            with open(source_path, 'wb') as f:
-                f.write(base64.b64decode(job_input['source_base64']))
-            logger.info("Source image processed successfully")
-        except Exception as e:
-            error_msg = f"Failed to process source image: {e}"
-            logger.error(error_msg)
+        # Validate required inputs
+        if 'source_base64' not in job_input:
+            error_msg = "source_base64 is required"
+            log.error(error_msg)
             send_telegram_message(bot_token, chat_id, f"❌ {error_msg}")
             return {"error": error_msg}
         
-        # Handle target file
+        # Create temp directory
+        temp_dir = tempfile.mkdtemp()
+        log.info(f"Created temp directory: {temp_dir}")
+        
+        # Process source image
+        source_path = os.path.join(temp_dir, 'source.jpg')
+        try:
+            source_data = base64.b64decode(job_input['source_base64'])
+            with open(source_path, 'wb') as f:
+                f.write(source_data)
+            log.info(f"Source image saved: {len(source_data)} bytes")
+        except Exception as e:
+            error_msg = f"Failed to decode source image: {e}"
+            log.error(error_msg)
+            send_telegram_message(bot_token, chat_id, f"❌ {error_msg}")
+            return {"error": error_msg}
+        
+        # Process target file
+        is_video = job_input.get('is_video', False)
         target_ext = '.mp4' if is_video else '.jpg'
         target_path = os.path.join(temp_dir, f'target{target_ext}')
         output_path = os.path.join(temp_dir, f'output{target_ext}')
         
         try:
             if 'target_url' in job_input:
-                response = requests.get(job_input['target_url'], timeout=60)
+                log.info(f"Downloading target from URL: {job_input['target_url']}")
+                response = requests.get(job_input['target_url'], timeout=120)
                 response.raise_for_status()
                 with open(target_path, 'wb') as f:
                     f.write(response.content)
+                log.info(f"Target downloaded: {len(response.content)} bytes")
             else:
+                target_data = base64.b64decode(job_input['target_base64'])
                 with open(target_path, 'wb') as f:
-                    f.write(base64.b64decode(job_input['target_base64']))
-            logger.info("Target file processed successfully")
+                    f.write(target_data)
+                log.info(f"Target decoded: {len(target_data)} bytes")
         except Exception as e:
-            error_msg = f"Failed to process target file: {e}"
-            logger.error(error_msg)
+            error_msg = f"Failed to process target: {e}"
+            log.error(error_msg)
             send_telegram_message(bot_token, chat_id, f"❌ {error_msg}")
             return {"error": error_msg}
         
-        # Progress update[10]
-        runpod.serverless.progress_update(job, "Files processed, starting FaceFusion...")
+        # Send processing update
+        send_telegram_message(bot_token, chat_id, "⚡ Running FaceFusion...")
         
-        # Run FaceFusion with timeout
+        # Execute FaceFusion
         cmd = [
             'python', 'facefusion.py',
             'headless-run',
@@ -97,42 +113,38 @@ def handler(job):
             '--execution-providers', 'cuda'
         ]
         
-        logger.info(f"Executing FaceFusion command: {' '.join(cmd)}")
+        log.info(f"Executing command: {' '.join(cmd)}")
         
-        # Send progress update
-        send_telegram_message(bot_token, chat_id, "⚡ FaceFusion processing started...")
+        # Run with timeout
+        timeout = 600 if is_video else 180
+        start_time = time.time()
         
-        # Execute with proper timeout
-        timeout = 600 if is_video else 180  # 10 mins for video, 3 mins for image
         result = subprocess.run(
-            cmd, 
-            capture_output=True, 
-            text=True, 
+            cmd,
+            capture_output=True,
+            text=True,
             cwd='/facefusion',
             timeout=timeout
         )
         
+        execution_time = time.time() - start_time
+        log.info(f"FaceFusion completed in {execution_time:.2f} seconds")
+        
         if result.returncode != 0:
-            error_msg = f"FaceFusion failed: {result.stderr[:200]}..."
-            logger.error(error_msg)
-            send_telegram_message(bot_token, chat_id, f"❌ Processing failed: {result.stderr[:100]}...")
+            error_msg = f"FaceFusion failed: {result.stderr[:500]}"
+            log.error(error_msg)
+            send_telegram_message(bot_token, chat_id, f"❌ Processing failed")
             return {"error": error_msg}
         
-        # Check output file
+        # Check output
         if not os.path.exists(output_path):
-            error_msg = "Output file was not generated"
-            logger.error(error_msg)
+            error_msg = "Output file not generated"
+            log.error(error_msg)
             send_telegram_message(bot_token, chat_id, f"❌ {error_msg}")
             return {"error": error_msg}
         
         file_size = os.path.getsize(output_path)
-        max_size = 50 * 1024 * 1024  # 50MB limit
-        
-        if file_size > max_size:
-            error_msg = f"Output too large: {file_size/1024/1024:.1f}MB"
-            logger.error(error_msg)
-            send_telegram_message(bot_token, chat_id, f"❌ {error_msg}")
-            return {"error": error_msg}
+        log.info(f"Output file size: {file_size} bytes")
         
         # Send to Telegram
         try:
@@ -145,7 +157,7 @@ def handler(job):
                         'caption': '✅ Face swap completed!',
                         'supports_streaming': True
                     }
-                    response = requests.post(url, files=files, data=data, timeout=120)
+                    response = requests.post(url, files=files, data=data, timeout=300)
             else:
                 url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
                 with open(output_path, 'rb') as photo_file:
@@ -154,39 +166,35 @@ def handler(job):
                         'chat_id': chat_id,
                         'caption': '✅ Face swap completed!'
                     }
-                    response = requests.post(url, files=files, data=data, timeout=60)
+                    response = requests.post(url, files=files, data=data, timeout=120)
             
             response.raise_for_status()
-            logger.info(f"Successfully sent result to Telegram for chat {chat_id}")
+            log.info("Successfully sent result to Telegram")
             
         except Exception as e:
             error_msg = f"Failed to send to Telegram: {e}"
-            logger.error(error_msg)
+            log.error(error_msg)
             return {"error": error_msg}
         
         # Cleanup
         import shutil
         shutil.rmtree(temp_dir)
+        log.info("Cleanup completed")
         
         return {
             "success": True,
             "chat_id": chat_id,
             "file_size": file_size,
-            "processing_time": time.time() - time.time(),  # You'd track this properly
-            "refresh_worker": True  # Clean state for next job[10]
+            "execution_time": execution_time
         }
         
-    except subprocess.TimeoutExpired:
-        error_msg = f"Processing timed out after {timeout} seconds"
-        logger.error(error_msg)
-        send_telegram_message(bot_token, chat_id, "❌ Processing timed out. Please try a smaller file.")
-        return {"error": error_msg}
-        
     except Exception as e:
-        error_msg = f"Unexpected error: {str(e)}"
-        logger.error(error_msg)
-        send_telegram_message(bot_token, chat_id, f"❌ Unexpected error occurred")
+        error_msg = f"Handler error: {str(e)}"
+        log.error(error_msg)
+        send_telegram_message(bot_token, chat_id, "❌ Unexpected error occurred")
         return {"error": error_msg}
 
-# Start the serverless worker
-runpod.serverless.start({"handler": handler})
+# Critical: Proper startup[4]
+if __name__ == "__main__":
+    log.info("=== STARTING RUNPOD SERVERLESS HANDLER ===")
+    runpod.serverless.start({"handler": handler})

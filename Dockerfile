@@ -21,4 +21,4 @@ RUN pip install runpod
 
 COPY handler.py /facefusion/handler.py
 
-CMD ["python", "handler.py"]
+CMD ["python", "/facefusion/handler.py"]
