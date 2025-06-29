@@ -16,3 +16,9 @@ RUN apt-get install ffmpeg -y
 
 RUN git clone https://github.com/facefusion/facefusion.git --branch ${FACEFUSION_VERSION} --single-branch .
 RUN python install.py --onnxruntime cuda --skip-conda
+
+RUN pip install runpod
+
+COPY handler.py /facefusion/handler.py
+
+CMD ["python", "handler.py"]

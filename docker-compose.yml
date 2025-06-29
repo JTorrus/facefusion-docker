@@ -1,15 +1,15 @@
 services:
- facefusion-tensorrt:
+ facefusion-cuda:
   build:
    context: .
-   dockerfile: Dockerfile.tensorrt
-  command: [ 'python', 'facefusion.py', 'run', '--execution-providers', 'tensorrt' ]
+   dockerfile: Dockerfile.cuda
+  command: [ 'python', 'facefusion.py', 'headless-run', '--execution-providers', 'cuda' ]
   volumes:
   - .assets:/facefusion/.assets
   - .caches:/facefusion/.caches
   - .jobs:/facefusion/.jobs
   ports:
-  - 7875:7860
+  - 7870:7860
   deploy:
    resources:
     reservations:
