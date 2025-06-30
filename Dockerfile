@@ -4,9 +4,10 @@ ARG FACEFUSION_VERSION=3.3.0
 ENV GRADIO_SERVER_NAME=0.0.0.0
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-WORKDIR /facefusion
+# Create workspace directory structure[2]
+WORKDIR /workspace/runpod-worker-facefusion
 
-# Install dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     python3.12 \
     python-is-python3 \
@@ -16,15 +17,20 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install FaceFusion
+# Install FaceFusion in separate directory
+WORKDIR /facefusion
 RUN git clone https://github.com/facefusion/facefusion.git --branch ${FACEFUSION_VERSION} --single-branch .
 RUN python install.py --onnxruntime cuda --skip-conda
 
 # Install RunPod SDK
 RUN pip install runpod
 
-# Copy your handler
-COPY handler.py /facefusion/handler.py
+# Switch back to workspace
+WORKDIR /workspace/runpod-worker-facefusion
 
-# CRITICAL: Start the handler, NOT FaceFusion directly[1]
-CMD ["python", "-u", "/facefusion/handler.py"]
+# Copy files with proper permissions in one step[3]
+COPY --chmod=755 handler.py /workspace/runpod-worker-facefusion/handler.py
+COPY --chmod=755 start.sh /start.sh
+
+# Use ENTRYPOINT for guaranteed execution[5]
+ENTRYPOINT /start.sh
