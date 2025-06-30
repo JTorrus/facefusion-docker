@@ -299,8 +299,10 @@ def handler(event):
     if 'errors' in validated_input:
         logger.error(f"Input validation failed: {validated_input['errors']}", job_id)
         return {'error': validated_input['errors']}
-    
-    return facefusion_swap_api(job_id, validated_input['validated_input'])
+
+    return {'error': 'caca'}
+
+    # return facefusion_swap_api(job_id, validated_input['validated_input'])
 
 if __name__ == '__main__':
     logger.info("=== STARTING FACEFUSION RUNPOD WORKER ===")
