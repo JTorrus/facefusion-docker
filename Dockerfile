@@ -6,19 +6,25 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 WORKDIR /facefusion
 
-RUN apt-get update
-RUN apt-get install python3.12 -y
-RUN apt-get install python-is-python3 -y
-RUN apt-get install pip -y
-RUN apt-get install git -y
-RUN apt-get install curl -y
-RUN apt-get install ffmpeg -y
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    python3.12 \
+    python-is-python3 \
+    pip \
+    git \
+    curl \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
+# Install FaceFusion
 RUN git clone https://github.com/facefusion/facefusion.git --branch ${FACEFUSION_VERSION} --single-branch .
 RUN python install.py --onnxruntime cuda --skip-conda
 
+# Install RunPod SDK
 RUN pip install runpod
 
+# Copy your handler
 COPY handler.py /facefusion/handler.py
 
-CMD ["python", "/facefusion/handler.py"]
+# CRITICAL: Start the handler, NOT FaceFusion directly[1]
+CMD ["python", "-u", "/facefusion/handler.py"]
