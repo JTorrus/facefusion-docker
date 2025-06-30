@@ -1,10 +1,6 @@
 import os
-import io
 import uuid
-import base64
 import subprocess
-import cv2
-import numpy as np
 import traceback
 import requests
 import tempfile
@@ -12,31 +8,25 @@ import shutil
 import runpod
 from runpod.serverless.utils.rp_validator import validate
 from runpod.serverless.modules.rp_logger import RunPodLogger
-from typing import Union
-from PIL import Image
 
 # Configuration
 TMP_PATH = '/tmp/facefusion'
 FACEFUSION_PATH = '/facefusion'
 logger = RunPodLogger()
 
-# Input validation schema (adapted from inswapper)
+# Updated input schema for Telegram URLs[6]
 INPUT_SCHEMA = {
     'chat_id': {
         'type': str,
         'required': True
     },
-    'source_base64': {
+    'source_telegram_url': {
         'type': str,
         'required': True
     },
-    'target_base64': {
+    'target_telegram_url': {
         'type': str,
-        'required': False
-    },
-    'target_url': {
-        'type': str,
-        'required': False
+        'required': True
     },
     'is_video': {
         'type': bool,
@@ -96,19 +86,34 @@ def send_telegram_media(bot_token: str, chat_id: str, file_path: str, is_video: 
         logger.error(f"Failed to send media to Telegram: {e}")
         raise
 
-def determine_file_extension(image_data: str) -> str:
-    """Determine file extension from base64 data"""
+def download_telegram_file(bot_token: str, telegram_url: str, output_path: str, job_id: str) -> bool:
+    """Download file from Telegram URL[6]"""
     try:
-        if image_data.startswith('/9j/'):
-            return '.jpg'
-        elif image_data.startswith('iVBORw0Kg'):
-            return '.png'
-        elif image_data.startswith('UklGR'):  # WebP
-            return '.webp'
+        logger.info(f"Downloading from Telegram URL: {telegram_url}", job_id)
+        
+        # Telegram URLs are in format: https://api.telegram.org/file/bot<token>/<file_path>
+        # Or sometimes just the file_path part is provided
+        if telegram_url.startswith('https://api.telegram.org/file/bot'):
+            download_url = telegram_url
         else:
-            return '.jpg'  # Default
-    except Exception:
-        return '.jpg'
+            # Construct full URL if only file_path is provided
+            download_url = f"https://api.telegram.org/file/bot{bot_token}/{telegram_url}"
+        
+        response = requests.get(download_url, timeout=120, stream=True)
+        response.raise_for_status()
+        
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        file_size = os.path.getsize(output_path)
+        logger.info(f"Downloaded successfully: {file_size} bytes", job_id)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to download from Telegram: {e}", job_id)
+        return False
 
 def clean_up_temporary_files(*file_paths):
     """Clean up temporary files"""
@@ -120,28 +125,11 @@ def clean_up_temporary_files(*file_paths):
         except Exception as e:
             logger.error(f"Failed to clean up {file_path}: {e}")
 
-def download_target_file(target_url: str, target_path: str) -> bool:
-    """Download target file from URL"""
-    try:
-        logger.info(f"Downloading target from: {target_url}")
-        response = requests.get(target_url, timeout=120, stream=True)
-        response.raise_for_status()
-        
-        with open(target_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        logger.info(f"Target downloaded successfully: {os.path.getsize(target_path)} bytes")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to download target: {e}")
-        return False
-
 def run_facefusion_swap(job_id: str, source_path: str, target_path: str, output_path: str, 
                        face_swapper_model: str, is_video: bool, output_quality: int) -> bool:
     """Execute FaceFusion face swap"""
     try:
-        # Build FaceFusion command[1]
+        # Build FaceFusion command
         cmd = [
             'python', 'facefusion.py',
             'headless-run',
@@ -189,7 +177,7 @@ def run_facefusion_swap(job_id: str, source_path: str, target_path: str, output_
         return False
 
 def facefusion_swap_api(job_id: str, job_input: dict):
-    """Main face swap processing function"""
+    """Main face swap processing function using Telegram URLs"""
     
     # Get bot token
     bot_token = os.environ.get('RUNPOD_SECRET_TELEGRAM_BOT_TOKEN')
@@ -209,37 +197,28 @@ def facefusion_swap_api(job_id: str, job_input: dict):
     temp_files = []
     
     try:
-        # Process source image
-        logger.info("Processing source image", job_id)
-        source_data = base64.b64decode(job_input['source_base64'])
-        source_ext = determine_file_extension(job_input['source_base64'])
-        source_path = f'{TMP_PATH}/source_{unique_id}{source_ext}'
-        
-        with open(source_path, 'wb') as f:
-            f.write(source_data)
+        # Download source image from Telegram[6]
+        logger.info("Downloading source image from Telegram", job_id)
+        source_path = f'{TMP_PATH}/source_{unique_id}.jpg'
         temp_files.append(source_path)
-        logger.info(f"Source saved: {len(source_data)} bytes", job_id)
         
-        # Process target file
+        if not download_telegram_file(bot_token, job_input['source_telegram_url'], source_path, job_id):
+            send_telegram_message(bot_token, chat_id, "❌ Failed to download source image")
+            return {'error': 'Failed to download source image'}
+        
+        # Download target file from Telegram
         is_video = job_input.get('is_video', False)
         target_ext = '.mp4' if is_video else '.jpg'
         target_path = f'{TMP_PATH}/target_{unique_id}{target_ext}'
         temp_files.append(target_path)
         
-        if 'target_url' in job_input:
-            if not download_target_file(job_input['target_url'], target_path):
-                send_telegram_message(bot_token, chat_id, "❌ Failed to download target file")
-                return {'error': 'Failed to download target file'}
-        else:
-            logger.info("Processing target from base64", job_id)
-            target_data = base64.b64decode(job_input['target_base64'])
-            with open(target_path, 'wb') as f:
-                f.write(target_data)
-            logger.info(f"Target saved: {len(target_data)} bytes", job_id)
+        logger.info("Downloading target file from Telegram", job_id)
+        if not download_telegram_file(bot_token, job_input['target_telegram_url'], target_path, job_id):
+            send_telegram_message(bot_token, chat_id, "❌ Failed to download target file")
+            return {'error': 'Failed to download target file'}
         
         # Set output path
-        output_ext = target_ext
-        output_path = f'{TMP_PATH}/output_{unique_id}{output_ext}'
+        output_path = f'{TMP_PATH}/output_{unique_id}{target_ext}'
         temp_files.append(output_path)
         
         # Extract parameters
